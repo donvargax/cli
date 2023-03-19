@@ -6,10 +6,13 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/internal/prompter"
+	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/cli/cli/v2/pkg/prompt"
+	"github.com/cli/cli/v2/pkg/surveyext"
 )
 
 type Action int
@@ -342,4 +345,21 @@ func MetadataSurvey(io *iostreams.IOStreams, baseRepo ghrepo.Interface, fetcher 
 	}
 
 	return nil
+}
+
+func TitledEditSurvey(cf func() (config.Config, error), io *iostreams.IOStreams) func(string, string) (string, string, error) {
+	return func(initialTitle, initialBody string) (string, string, error) {
+		editorCommand, err := cmdutil.DetermineEditor(cf)
+		if err != nil {
+			return "", "", err
+		}
+		initialValue := initialTitle + "\n" + initialBody
+		titleAndBody, err := surveyext.Edit(editorCommand, "*.md", initialValue, io.In, io.Out, io.ErrOut)
+		if err != nil {
+			return "", "", err
+		}
+		titleAndBody = strings.ReplaceAll(titleAndBody, "\r\n", "\n")
+		title, body, _ := strings.Cut(titleAndBody, "\n")
+		return title, body, nil
+	}
 }
