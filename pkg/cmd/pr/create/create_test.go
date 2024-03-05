@@ -194,6 +194,39 @@ func TestNewCmdCreate(t *testing.T) {
 			cli:      "--fill --fill-first",
 			wantsErr: true,
 		},
+		{
+			name:     "fill-branch",
+			tty:      false,
+			cli:      "--fill-branch",
+			wantsErr: false,
+			wantsOpts: CreateOptions{
+				Title:               "",
+				TitleProvided:       false,
+				Body:                "",
+				BodyProvided:        false,
+				Autofill:            false,
+				FillFirst:           false,
+				FillBranch:          true,
+				RecoverFile:         "",
+				WebMode:             false,
+				IsDraft:             false,
+				BaseBranch:          "",
+				HeadBranch:          "",
+				MaintainerCanModify: true,
+			},
+		},
+		{
+			name:     "fill and fill-branch",
+			tty:      false,
+			cli:      "--fill --fill-branch",
+			wantsErr: true,
+		},
+		{
+			name:     "fill-first and fill-branch",
+			tty:      false,
+			cli:      "--fill-first --fill-branch",
+			wantsErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -237,6 +270,7 @@ func TestNewCmdCreate(t *testing.T) {
 			assert.Equal(t, tt.wantsOpts.TitleProvided, opts.TitleProvided)
 			assert.Equal(t, tt.wantsOpts.Autofill, opts.Autofill)
 			assert.Equal(t, tt.wantsOpts.FillFirst, opts.FillFirst)
+			assert.Equal(t, tt.wantsOpts.FillBranch, opts.FillBranch)
 			assert.Equal(t, tt.wantsOpts.WebMode, opts.WebMode)
 			assert.Equal(t, tt.wantsOpts.RecoverFile, opts.RecoverFile)
 			assert.Equal(t, tt.wantsOpts.IsDraft, opts.IsDraft)
@@ -1134,6 +1168,77 @@ func Test_createRun(t *testing.T) {
 						func(input map[string]interface{}) {
 							assert.Equal(t, "feature", input["title"], "pr title should be branch name")
 							assert.Equal(t, "- **first commit of pr**\n  first commit with super long description, with super long description, with super long description, with super long description.\n\n- **second commit of pr**\n  second commit description", input["body"], "pr body should be commits msg+body")
+						},
+					),
+				)
+			},
+			expectedOut:    "https://github.com/OWNER/REPO/pull/12\n",
+			expectedErrOut: "\nCreating pull request for feature into master in OWNER/REPO\n\n",
+		},
+		{
+			name: "fill-branch flag provided with single commit",
+			tty:  true,
+			setup: func(opts *CreateOptions, t *testing.T) func() {
+				opts.FillBranch = true
+				opts.HeadBranch = "feature"
+				return func() {}
+			},
+			cmdStubs: func(cs *run.CommandStubber) {
+				cs.Register(
+					"git -c log.ShowSignature=false log --pretty=format:%H,%s --cherry origin/master...feature",
+					0,
+					"343jdfe47c9e3a30093cd17e48934ce354148e80,single commit of pr",
+				)
+			},
+			httpStubs: func(reg *httpmock.Registry, t *testing.T) {
+				reg.Register(
+					httpmock.GraphQL(`mutation PullRequestCreate\b`),
+					httpmock.GraphQLMutation(`
+						{
+						"data": { "createPullRequest": { "pullRequest": {
+							"URL": "https://github.com/OWNER/REPO/pull/12"
+							} } }
+						}
+						`,
+						func(input map[string]interface{}) {
+							assert.Equal(t, "feature", input["title"], "pr title should be branch name")
+							assert.Equal(t, "- single commit of pr\n", input["body"], "pr body should be single commit message")
+						},
+					),
+				)
+			},
+			expectedOut:    "https://github.com/OWNER/REPO/pull/12\n",
+			expectedErrOut: "\nCreating pull request for feature into master in OWNER/REPO\n\n",
+		},
+		{
+			name: "fill-branch flag provided with multiple commits",
+			tty:  true,
+			setup: func(opts *CreateOptions, t *testing.T) func() {
+				opts.FillBranch = true
+				opts.HeadBranch = "feature"
+				return func() {}
+			},
+			cmdStubs: func(cs *run.CommandStubber) {
+				cs.Register(
+					"git -c log.ShowSignature=false log --pretty=format:%H,%s --cherry origin/master...feature",
+					0,
+					"56b6f8bb7c9e3a30093cd17e48934ce354148e80,second commit of pr\n"+
+						"343jdfe47c9e3a30093cd17e48934ce354148e80,first commit of pr",
+				)
+			},
+			httpStubs: func(reg *httpmock.Registry, t *testing.T) {
+				reg.Register(
+					httpmock.GraphQL(`mutation PullRequestCreate\b`),
+					httpmock.GraphQLMutation(`
+						{
+						"data": { "createPullRequest": { "pullRequest": {
+							"URL": "https://github.com/OWNER/REPO/pull/12"
+							} } }
+						}
+						`,
+						func(input map[string]interface{}) {
+							assert.Equal(t, "feature", input["title"], "pr title should be branch name")
+							assert.Equal(t, "- first commit of pr\n- second commit of pr\n", input["body"], "pr body should be all commits messages")
 						},
 					),
 				)
