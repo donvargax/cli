@@ -47,7 +47,9 @@ type CreateOptions struct {
 	Autofill    bool
 	FillVerbose bool
 	FillFirst   bool
+	FillBranch  bool
 	WebMode     bool
+	EditorMode  bool
 	RecoverFile string
 
 	IsDraft    bool
@@ -172,6 +174,22 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 				return cmdutil.FlagErrorf("`--fill-verbose` is not supported with `--fill`")
 			}
 
+			if opts.Autofill && opts.FillBranch {
+				return cmdutil.FlagErrorf("`--fill` is not supported with `--fill-branch`")
+			}
+
+			if opts.FillFirst && opts.FillBranch {
+				return cmdutil.FlagErrorf("`--fill-first` is not supported with `--fill-branch`")
+			}
+
+			if err := cmdutil.MutuallyExclusive(
+				"specify only one of `--editor` or `web`",
+				opts.EditorMode,
+				opts.WebMode,
+			); err != nil {
+				return err
+			}
+
 			opts.BodyProvided = cmd.Flags().Changed("body")
 			if bodyFile != "" {
 				b, err := cmdutil.ReadFile(bodyFile, opts.IO.In)
@@ -186,8 +204,8 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 				return cmdutil.FlagErrorf("`--template` is not supported when using `--body` or `--body-file`")
 			}
 
-			if !opts.IO.CanPrompt() && !opts.WebMode && !(opts.FillVerbose || opts.Autofill || opts.FillFirst) && (!opts.TitleProvided || !opts.BodyProvided) {
-				return cmdutil.FlagErrorf("must provide `--title` and `--body` (or `--fill` or `fill-first` or `--fillverbose`) when not running interactively")
+			if !opts.IO.CanPrompt() && !opts.WebMode && !(opts.FillVerbose || opts.Autofill || opts.FillFirst || opts.FillBranch) && (!opts.TitleProvided || !opts.BodyProvided) {
+				return cmdutil.FlagErrorf("must provide `--title` and `--body` (or `--fill` or `fill-first` or `fill-branch`) when not running interactively")
 			}
 
 			if runF != nil {
@@ -208,6 +226,7 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 	fl.BoolVarP(&opts.FillVerbose, "fill-verbose", "", false, "Use commits msg+body for description")
 	fl.BoolVarP(&opts.Autofill, "fill", "f", false, "Use commit info for title and body")
 	fl.BoolVar(&opts.FillFirst, "fill-first", false, "Use first commit info for title and body")
+	fl.BoolVar(&opts.FillBranch, "fill-branch", false, "Use branch name for title and all commit messages for body")
 	fl.StringSliceVarP(&opts.Reviewers, "reviewer", "r", nil, "Request reviews from people or teams by their `handle`")
 	fl.StringSliceVarP(&opts.Assignees, "assignee", "a", nil, "Assign people by their `login`. Use \"@me\" to self-assign.")
 	fl.StringSliceVarP(&opts.Labels, "label", "l", nil, "Add labels by `name`")
@@ -246,7 +265,7 @@ func createRun(opts *CreateOptions) (err error) {
 	var openURL string
 
 	if opts.WebMode {
-		if !(opts.Autofill || opts.FillFirst) {
+		if !(opts.Autofill || opts.FillFirst || opts.FillBranch) {
 			state.Title = opts.Title
 			state.Body = opts.Body
 		}
@@ -263,6 +282,13 @@ func createRun(opts *CreateOptions) (err error) {
 			return
 		}
 		return previewPR(*opts, openURL)
+	} else {
+		if opts.EditorMode {
+			if opts.Template != "" {
+				// var template shared.Template
+				// template, err =
+			}
+		}
 	}
 
 	if opts.TitleProvided {
@@ -302,7 +328,7 @@ func createRun(opts *CreateOptions) (err error) {
 			ghrepo.FullName(ctx.BaseRepo))
 	}
 
-	if opts.FillVerbose || opts.Autofill || opts.FillFirst || (opts.TitleProvided && opts.BodyProvided) {
+	if opts.FillVerbose || opts.Autofill || opts.FillFirst || opts.FillBranch || (opts.TitleProvided && opts.BodyProvided) {
 		err = handlePush(*opts, *ctx)
 		if err != nil {
 			return
@@ -415,7 +441,7 @@ func createRun(opts *CreateOptions) (err error) {
 
 var regexPattern = regexp.MustCompile(`(?m)^`)
 
-func initDefaultTitleBody(ctx CreateContext, state *shared.IssueMetadataState, useFirstCommit bool, addBody bool) error {
+func initDefaultTitleBody(ctx CreateContext, state *shared.IssueMetadataState, opts *CreateOptions) error {
 	baseRef := ctx.BaseTrackingBranch
 	headRef := ctx.HeadBranch
 	gitClient := ctx.GitClient
@@ -425,15 +451,21 @@ func initDefaultTitleBody(ctx CreateContext, state *shared.IssueMetadataState, u
 		return err
 	}
 
-	if len(commits) == 1 || useFirstCommit {
-		state.Title = commits[len(commits)-1].Title
-		state.Body = commits[len(commits)-1].Body
+	if (len(commits) == 1 || opts.FillFirst) && !opts.FillBranch {
+		commitIndex := len(commits) - 1
+		state.Title = commits[commitIndex].Title
+		state.Body = commits[commitIndex].Body
+		/*body, err := gitClient.CommitBody(context.Background(), commits[commitIndex].Sha)
+		if err != nil {
+			return err
+		}
+		state.Body = body*/
 	} else {
 		state.Title = humanize(headRef)
 		var body strings.Builder
 		for i := len(commits) - 1; i >= 0; i-- {
 			fmt.Fprintf(&body, "- **%s**\n", commits[i].Title)
-			if addBody {
+			if opts.FillVerbose {
 				x := regexPattern.ReplaceAllString(commits[i].Body, "  ")
 				fmt.Fprintf(&body, "%s", x)
 
@@ -512,9 +544,9 @@ func NewIssueState(ctx CreateContext, opts CreateOptions) (*shared.IssueMetadata
 		Draft:      opts.IsDraft,
 	}
 
-	if opts.FillVerbose || opts.Autofill || opts.FillFirst || !opts.TitleProvided || !opts.BodyProvided {
-		err := initDefaultTitleBody(ctx, state, opts.FillFirst, opts.FillVerbose)
-		if err != nil && (opts.FillVerbose || opts.Autofill || opts.FillFirst) {
+	if opts.FillVerbose || opts.Autofill || opts.FillFirst || opts.FillBranch || !opts.TitleProvided || !opts.BodyProvided {
+		err := initDefaultTitleBody(ctx, state, &opts)
+		if err != nil && (opts.FillVerbose || opts.Autofill || opts.FillFirst || opts.FillBranch) {
 			return nil, fmt.Errorf("could not compute title or body defaults: %w", err)
 		}
 	}

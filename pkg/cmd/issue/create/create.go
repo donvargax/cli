@@ -299,7 +299,7 @@ func createRun(opts *CreateOptions) (err error) {
 	} else {
 		if opts.EditorMode {
 			if opts.Template != "" {
-				var template shared.Template
+				var template prShared.Template
 				template, err = tpl.Select(opts.Template)
 				if err != nil {
 					return
